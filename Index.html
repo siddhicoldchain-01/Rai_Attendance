@@ -75,6 +75,7 @@
         .request-note { display: block; margin: 3px 0; color: #526983; overflow-wrap: anywhere; }
         #correction-dialog { box-sizing: border-box; width: min(92vw, 400px); border: 1px solid #cbd9e7; border-radius: 14px; padding: 20px; text-align: left; }
         #correction-dialog::backdrop { background: #12243a80; }
+        #correction-dialog label[hidden] { display: none; }
         #correction-dialog label { display: block; margin-bottom: 10px; font-weight: 650; font-size: 14px; }
         #correction-dialog input, #correction-dialog select, #correction-dialog textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 8px; border: 1px solid #aebed0; border-radius: 6px; font: inherit; }
         #correction-error { color: #962e35; font-size: 13px; }
@@ -142,7 +143,8 @@
     <dialog id="correction-dialog">
         <form id="correction-form">
             <h3 id="correction-title">Attendance correction</h3>
-            <label>IN time <input id="correction-in" type="time" required></label>
+            <p id="correction-recorded-in" hidden></p>
+            <label id="correction-in-label">IN time <input id="correction-in" type="time" required></label>
             <label>OUT date <select id="correction-out-date" required></select></label>
             <label>OUT time <input id="correction-out" type="time" required></label>
             <label>Reason <textarea id="correction-reason" maxlength="500" rows="3" required></textarea></label>
@@ -421,6 +423,7 @@
         for (const punch of groupHistory(history, today).days) {
             if (!punch.date.startsWith(month + '-')) continue;
             const day = dates.get(punch.date) || { date: punch.date, eligible: false };
+            if (day.requestType === 'OUT') continue;
             const inTime = missing(day.inTime) && punch.IN ? punch.IN.clock : day.inTime;
             const outTime = missing(day.outTime) && punch.OUT ? punch.OUT.clock : day.outTime;
             const status = missing(day.status) ? (punch.IN ? 'Present' : 'OUT recorded') : day.status;
@@ -486,8 +489,9 @@
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'btn-small request-action';
-                button.textContent = day.request === 'Rejected' ? 'Request again' : 'Request correction';
-                button.addEventListener('click', () => openCorrection(day.date));
+                button.textContent = day.requestType === 'OUT' ? 'Request OUT'
+                    : day.request === 'Rejected' ? 'Request again' : 'Request correction';
+                button.addEventListener('click', () => openCorrection(day));
                 cell.append(button);
             } else if (!day.request) {
                 cell.textContent = '—';
@@ -497,10 +501,17 @@
         byId('history-list').replaceChildren(wrap);
     }
 
-    function openCorrection(date) {
+    function openCorrection(day) {
+        const { date } = day;
+        const outOnly = day.requestType === 'OUT';
         selectedCorrectionDate = date;
         byId('correction-form').reset();
-        byId('correction-title').textContent = 'Attendance correction · ' + date;
+        byId('correction-in-label').hidden = outOnly;
+        byId('correction-in').disabled = outOnly;
+        byId('correction-in').required = !outOnly;
+        byId('correction-recorded-in').hidden = !outOnly;
+        byId('correction-recorded-in').textContent = outOnly ? 'Recorded IN · ' + day.inTime : '';
+        byId('correction-title').textContent = (outOnly ? 'Request missing OUT · ' : 'Attendance correction · ') + date;
         byId('correction-error').textContent = '';
         const tomorrow = new Date(Date.parse(date + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
         byId('correction-out-date').replaceChildren(
