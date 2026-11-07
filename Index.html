@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#ffffff">
-    <title>Smart Attendance</title>
+    <title>RAI Attendance | Siddhi Cold Chain</title>
     <style>
         /* Mobile-First CSS */
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #ffffff; margin:0; padding: 0; text-align: center; color: #1f2937; -webkit-font-smoothing: antialiased; }
@@ -57,14 +57,25 @@
         /* History Section */
         .history-box { margin-top: 25px; text-align: left; }
         .history-title { font-weight: 700; font-size: 14px; margin-bottom: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
-        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 14px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 8px; font-size: 13px; }
-        .status-tag { padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 11px; letter-spacing: 0.5px; }
-        .tag-in { background: #d1fae5; color: #059669; }
-        .tag-out { background: #fee2e2; color: #dc2626; }
+        .brand { display: flex; justify-content: center; align-items: center; gap: 16px; flex-wrap: wrap; margin: 0 auto 28px; color: #24445e; font-weight: 750; }
+        .brand img { display: block; width: 140px; height: auto; }
+        .history-table { width: 100%; border-spacing: 0; overflow: hidden; border: 1px solid #dbe5ee; border-radius: 12px; font-size: 13px; }
+        .history-table th, .history-table td { padding: 11px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid #e2e8f0; }
+        .history-table thead { color: #3f5b70; background: #eef4fa; }
+        .history-table tr:last-child td { border-bottom: 0; }
+        .history-table td:first-child { font-weight: 650; }
+        .punch-location, .history-note { color: #55677b; font-size: 12px; }
+        .punch-location { display: block; overflow-wrap: anywhere; margin-top: 3px; }
+        .correction-link { display: inline-block; margin-top: 12px; padding: 9px 12px; background: #e9f2ff; color: #1c55a0; border-radius: 8px; font-weight: 700; font-size: 13px; }
+        .correction-link[hidden] { display: none; }
     </style>
 </head>
 <body>
     <div class="app-wrapper">
+        <header class="brand">
+            <img src="https://raw.githubusercontent.com/annikumar1237/Lawrence-Road/8f911338f823ae45982c7bec8921982dea1823c5/siddhi-logo.jpeg" alt="Siddhi Cold Chain" width="600" height="300">
+            <span>RAI Attendance</span>
+        </header>
         <div id="loading" style="font-weight: bold; color: #2563eb; display: none;">✨ Starting Portal...</div>
         
         <div id="login-view">
@@ -110,8 +121,9 @@
             <div id="feedback" style="margin-top:15px; font-weight:700; font-size: 15px;"></div>
             
             <div class="history-box">
-                <div class="history-title">Recent Activity</div>
-                <div id="history-list"></div>
+                <div class="history-title">Date-wise Attendance</div>
+                <div id="history-list" aria-live="polite"></div>
+                <a class="correction-link" id="correction-link" hidden>Request a correction</a>
             </div>
         </div>
     </div>
@@ -281,16 +293,87 @@
             note.innerText = config.lockStatus.msg;
         }
         renderHistory(config.history);
+        if (config.correctionsEnabled === true) {
+            const link = document.getElementById('correction-link');
+            link.href = SCRIPT_URL + '?rai=employee';
+            link.hidden = false;
+        }
         startGeofencing();
+    }
+
+    function groupHistory(history, today) {
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const days = new Map();
+        const other = [];
+
+        for (const item of history || []) {
+            const match = /^(\d{1,2}) ([A-Za-z]{3}), (\d{1,2}):(\d{2}) (AM|PM)$/i.exec(item.time || '');
+            const status = String(item.status || '').trim().toUpperCase();
+            const month = match ? months.indexOf(match[2]) + 1 : 0;
+            if (!month || !['IN', 'OUT'].includes(status)) {
+                other.push(item);
+                continue;
+            }
+
+            const monthDay = String(month).padStart(2, '0') + '-' + match[1].padStart(2, '0');
+            const inferredYear = Number(today.slice(0, 4)) - Number(monthDay > today.slice(5));
+            const date = item.date || inferredYear + '-' + monthDay;
+            const minutes = (Number(match[3]) % 12 + (match[5].toUpperCase() === 'PM' ? 12 : 0)) * 60 + Number(match[4]);
+            const order = Number(item.order) || minutes;
+            const day = days.get(date) || { date, label: match[1] + ' ' + match[2] + ' ' + date.slice(0, 4) };
+            const current = day[status];
+            if (!current || (status === 'IN' ? order < current.order : order > current.order)) {
+                day[status] = { clock: match[3] + ':' + match[4] + ' ' + match[5], loc: item.loc, order };
+            }
+            days.set(date, day);
+        }
+
+        return { days: [...days.values()].sort((a, b) => b.date.localeCompare(a.date)), other };
     }
 
     function renderHistory(history) {
         const list = document.getElementById('history-list');
-        list.innerHTML = history.map(item => `
-            <div class="history-item">
-                <span style="line-height: 1.4;"><b>${item.time}</b><br><span style="color:#64748b;">${item.loc}</span></span>
-                <span class="status-tag ${item.status === 'IN' ? 'tag-in' : 'tag-out'}">${item.status}</span>
-            </div>`).join('');
+        const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Kolkata' }).format(new Date());
+        const { days, other } = groupHistory(history, today);
+        list.replaceChildren();
+
+        if (days.length) {
+            const table = document.createElement('table');
+            table.className = 'history-table';
+            const header = table.createTHead().insertRow();
+            for (const label of ['Date', 'IN', 'OUT']) {
+                const cell = document.createElement('th');
+                cell.scope = 'col';
+                cell.textContent = label;
+                header.append(cell);
+            }
+            const body = table.createTBody();
+            for (const day of days) {
+                const row = body.insertRow();
+                row.insertCell().textContent = day.label;
+                for (const status of ['IN', 'OUT']) {
+                    const cell = row.insertCell();
+                    const punch = day[status];
+                    cell.textContent = punch?.clock || '—';
+                    if (punch?.loc) {
+                        const location = document.createElement('span');
+                        location.className = 'punch-location';
+                        location.textContent = punch.loc;
+                        cell.append(location);
+                    }
+                }
+            }
+            list.append(table);
+        }
+
+        if (other.length || !days.length) {
+            const note = document.createElement('p');
+            note.className = 'history-note';
+            note.textContent = other.length
+                ? other.map(item => [item.time, item.status, item.loc].filter(Boolean).join(' · ')).join(' | ')
+                : 'No recent punches to show.';
+            list.append(note);
+        }
     }
 
     function startGeofencing() {
