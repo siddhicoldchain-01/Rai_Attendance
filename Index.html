@@ -413,6 +413,23 @@
         }
     }
 
+    function mergeAttendanceRows(monthlyRows, history, month, today) {
+        const dates = new Map(monthlyRows.map(day => [day.date, day]));
+        const missing = value => ['', 'blank', 'absent', 'leave', '-', '—']
+            .includes(String(value ?? '').trim().toLowerCase());
+
+        for (const punch of groupHistory(history, today).days) {
+            if (!punch.date.startsWith(month + '-')) continue;
+            const day = dates.get(punch.date) || { date: punch.date, eligible: false };
+            const inTime = missing(day.inTime) && punch.IN ? punch.IN.clock : day.inTime;
+            const outTime = missing(day.outTime) && punch.OUT ? punch.OUT.clock : day.outTime;
+            const status = missing(day.status) ? (punch.IN ? 'Present' : 'OUT recorded') : day.status;
+            dates.set(punch.date, { ...day, inTime, outTime, status, eligible: false });
+        }
+
+        return [...dates.values()].sort((a, b) => b.date.localeCompare(a.date));
+    }
+
     async function loadAttendanceMonth() {
         const month = byId('attendance-month').value;
         if (!month) return;
@@ -421,14 +438,18 @@
         message.textContent = 'Loading attendance…';
         const result = await apiCall('getEmployeeCorrections', { token: employeeToken, month });
         if (request !== monthRequest) return;
-        if (!Array.isArray(result?.days)) {
-            message.textContent = result?.error || 'Could not load correction requests. Reload and verify your face to try again.';
-            return;
-        }
-        message.textContent = '';
-        if (!result.days.length) {
-            renderHistory(config.history.filter(item => item.date?.startsWith(month + '-')));
-            message.textContent = 'No correction dates found for this month.';
+
+        const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Kolkata' }).format(new Date());
+        const loaded = Array.isArray(result?.days);
+        const days = mergeAttendanceRows(loaded ? result.days : [], config.history, month, today);
+        message.textContent = loaded ? (days.length ? '' : 'No attendance records for this month.')
+            : (result?.error || 'Could not load correction requests. Reload and verify your face to try again.');
+        renderAttendanceRows(days);
+    }
+
+    function renderAttendanceRows(days) {
+        if (!days.length) {
+            byId('history-list').replaceChildren();
             return;
         }
         const wrap = document.createElement('div');
@@ -443,7 +464,7 @@
             heading.append(th);
         }
         const body = table.createTBody();
-        for (const day of result.days) {
+        for (const day of days) {
             const row = body.insertRow();
             for (const value of [day.date, day.inTime || '—', day.outTime || '—', day.status || 'Blank']) {
                 row.insertCell().textContent = value;
