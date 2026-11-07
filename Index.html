@@ -66,8 +66,18 @@
         .history-table td:first-child { font-weight: 650; }
         .punch-location, .history-note { color: #55677b; font-size: 12px; }
         .punch-location { display: block; overflow-wrap: anywhere; margin-top: 3px; }
-        .correction-link { display: inline-block; margin-top: 12px; padding: 9px 12px; background: #e9f2ff; color: #1c55a0; border-radius: 8px; font-weight: 700; font-size: 13px; }
-        .correction-link[hidden] { display: none; }
+        .attendance-month { display: block; font-size: 13px; margin-bottom: 10px; }
+        .attendance-month input { margin-left: 5px; }
+        .attendance-month[hidden] { display: none; }
+        .attendance-table-wrap { overflow-x: auto; }
+        .request-action { color: #18559a; background: #e9f2ff; }
+        .request-status { display: block; font-weight: 700; }
+        .request-note { display: block; margin: 3px 0; color: #526983; overflow-wrap: anywhere; }
+        #correction-dialog { box-sizing: border-box; width: min(92vw, 400px); border: 1px solid #cbd9e7; border-radius: 14px; padding: 20px; text-align: left; }
+        #correction-dialog::backdrop { background: #12243a80; }
+        #correction-dialog label { display: block; margin-bottom: 10px; font-weight: 650; font-size: 14px; }
+        #correction-dialog input, #correction-dialog select, #correction-dialog textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 8px; border: 1px solid #aebed0; border-radius: 6px; font: inherit; }
+        #correction-error { color: #962e35; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -122,11 +132,25 @@
             
             <div class="history-box">
                 <div class="history-title">Date-wise Attendance</div>
+                <label id="attendance-month-label" class="attendance-month" hidden>Month <input id="attendance-month" type="month"></label>
+                <p id="attendance-message" class="history-note" role="status"></p>
                 <div id="history-list" aria-live="polite"></div>
-                <a class="correction-link" id="correction-link" hidden>Request a correction</a>
             </div>
         </div>
     </div>
+
+    <dialog id="correction-dialog">
+        <form id="correction-form">
+            <h3 id="correction-title">Attendance correction</h3>
+            <label>IN time <input id="correction-in" type="time" required></label>
+            <label>OUT date <select id="correction-out-date" required></select></label>
+            <label>OUT time <input id="correction-out" type="time" required></label>
+            <label>Reason <textarea id="correction-reason" maxlength="500" rows="3" required></textarea></label>
+            <p id="correction-error" role="alert"></p>
+            <button type="submit" id="correction-submit" class="btn-small request-action">Submit to HR</button>
+            <button type="button" id="correction-cancel" class="btn-small">Cancel</button>
+        </form>
+    </dialog>
 
     <script>
     // 👇👇 PASTE YOUR GOOGLE APPS SCRIPT URL HERE 👇👇
@@ -134,7 +158,13 @@
     
     let config = {}, activeLoc = "", latestPos = null, stream = null, userEmail = "";
 
+    let employeeToken = "", selectedCorrectionDate = "", monthRequest = 0;
+    const byId = id => document.getElementById(id);
+
     window.onload = () => {
+        byId('attendance-month').addEventListener('change', loadAttendanceMonth);
+        byId('correction-cancel').addEventListener('click', () => byId('correction-dialog').close());
+        byId('correction-form').addEventListener('submit', submitCorrection);
         userEmail = localStorage.getItem("empEmail");
         if (userEmail) {
             loadData();
@@ -181,7 +211,7 @@
             config = data;
             document.getElementById('face-view').style.display = 'block';
             
-            if(data.isRegistered && data.masterPhotos.length > 0) {
+            if (data.isRegistered) {
                 document.getElementById('face-title').innerText = "Verifying...";
                 document.getElementById('ai-msg').innerText = "Starting Camera...";
                 startCamera(true); 
@@ -216,41 +246,46 @@
             };
             
             if(shouldVerify) {
+                let checking = false;
                 const interval = setInterval(async () => {
-                    const canvas = document.getElementById('canvas');
+                    if (checking || !video.videoWidth) return;
+                    checking = true;
+                    const canvas = byId('canvas');
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                     canvas.getContext('2d').drawImage(video, 0, 0);
-                    
                     const capturedPhoto = canvas.toDataURL('image/jpeg', 0.7);
-                    const msg = document.getElementById('ai-msg');
-                    msg.innerText = "⏳ Verifying Identity...";
+                    const msg = byId('ai-msg');
+                    msg.textContent = "⏳ Verifying Identity...";
                     msg.style.color = "#2563eb";
-
                     try {
-                        const response = await fetch('https://rai-attendance-p7k2.onrender.com/verify', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                captured: capturedPhoto,
-                                master: config.masterPhotos[0] 
-                            })
-                        });
-
-                        const result = await response.json();
-
-                        if (result.success && result.match) {
+                        let result;
+                        if (config.inlineCorrections === true) {
+                            result = await apiCall("verifyEmployeeFace", { photo: capturedPhoto });
+                            if (result?.error) throw new Error(result.error);
+                        } else {
+                            const response = await fetch('https://rai-attendance-p7k2.onrender.com/verify', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ captured: capturedPhoto, master: config.masterPhotos[0] })
+                            });
+                            result = await response.json();
+                        }
+                        if (result?.match && (result.token || result.success)) {
                             clearInterval(interval);
+                            employeeToken = result.token || "";
                             msg.style.color = "#059669";
-                            msg.innerText = "✅ Match Confirmed!";
-                            document.getElementById('scanner').style.display = 'none';
-                            setTimeout(accessGranted, 1000); 
+                            msg.textContent = "✅ Match Confirmed!";
+                            byId('scanner').style.display = 'none';
+                            setTimeout(accessGranted, 1000);
                         } else {
                             msg.style.color = "#dc2626";
-                            msg.innerText = "❌ Match Failed. Scanning again...";
+                            msg.textContent = "❌ Match Failed. Scanning again...";
                         }
                     } catch (err) {
-                        msg.innerText = "⚠️ Server connecting...";
+                        msg.textContent = "⚠️ Verification unavailable. Retrying...";
+                    } finally {
+                        checking = false;
                     }
                 }, 4000);
             }
@@ -293,10 +328,12 @@
             note.innerText = config.lockStatus.msg;
         }
         renderHistory(config.history);
-        if (config.correctionsEnabled === true) {
-            const link = document.getElementById('correction-link');
-            link.href = SCRIPT_URL + '?rai=employee';
-            link.hidden = false;
+        if (employeeToken) {
+            const month = byId('attendance-month');
+            month.max = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Kolkata' }).format(new Date()).slice(0, 7);
+            month.value = month.max;
+            byId('attendance-month-label').hidden = false;
+            loadAttendanceMonth();
         }
         startGeofencing();
     }
@@ -373,6 +410,105 @@
                 ? other.map(item => [item.time, item.status, item.loc].filter(Boolean).join(' · ')).join(' | ')
                 : 'No recent punches to show.';
             list.append(note);
+        }
+    }
+
+    async function loadAttendanceMonth() {
+        const month = byId('attendance-month').value;
+        if (!month) return;
+        const request = ++monthRequest;
+        const message = byId('attendance-message');
+        message.textContent = 'Loading attendance…';
+        const result = await apiCall('getEmployeeCorrections', { token: employeeToken, month });
+        if (request !== monthRequest) return;
+        if (!Array.isArray(result?.days)) {
+            message.textContent = result?.error || 'Could not load correction requests. Reload and verify your face to try again.';
+            return;
+        }
+        message.textContent = '';
+        if (!result.days.length) {
+            renderHistory(config.history.filter(item => item.date?.startsWith(month + '-')));
+            message.textContent = 'No correction dates found for this month.';
+            return;
+        }
+        const wrap = document.createElement('div');
+        wrap.className = 'attendance-table-wrap';
+        const table = document.createElement('table');
+        table.className = 'history-table';
+        const heading = table.createTHead().insertRow();
+        for (const title of ['Date', 'IN', 'OUT', 'Status', 'Correction']) {
+            const th = document.createElement('th');
+            th.scope = 'col';
+            th.textContent = title;
+            heading.append(th);
+        }
+        const body = table.createTBody();
+        for (const day of result.days) {
+            const row = body.insertRow();
+            for (const value of [day.date, day.inTime || '—', day.outTime || '—', day.status || 'Blank']) {
+                row.insertCell().textContent = value;
+            }
+            const cell = row.insertCell();
+            if (day.request) {
+                const status = document.createElement('span');
+                status.className = 'request-status';
+                status.textContent = day.request === 'Pending' ? 'Pending HR review' : day.request;
+                cell.append(status);
+                if (day.note) {
+                    const note = document.createElement('small');
+                    note.className = 'request-note';
+                    note.textContent = day.note;
+                    cell.append(note);
+                }
+            }
+            if (day.eligible) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn-small request-action';
+                button.textContent = day.request === 'Rejected' ? 'Request again' : 'Request correction';
+                button.addEventListener('click', () => openCorrection(day.date));
+                cell.append(button);
+            } else if (!day.request) {
+                cell.textContent = '—';
+            }
+        }
+        wrap.append(table);
+        byId('history-list').replaceChildren(wrap);
+    }
+
+    function openCorrection(date) {
+        selectedCorrectionDate = date;
+        byId('correction-form').reset();
+        byId('correction-title').textContent = 'Attendance correction · ' + date;
+        byId('correction-error').textContent = '';
+        const tomorrow = new Date(Date.parse(date + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+        byId('correction-out-date').replaceChildren(
+            new Option(date + ' (same day)', date),
+            new Option(tomorrow + ' (next day)', tomorrow)
+        );
+        byId('correction-dialog').showModal();
+    }
+
+    async function submitCorrection(event) {
+        event.preventDefault();
+        const submit = byId('correction-submit');
+        const cancel = byId('correction-cancel');
+        submit.disabled = cancel.disabled = true;
+        byId('correction-error').textContent = '';
+        try {
+            const result = await apiCall('submitEmployeeCorrection', {
+                token: employeeToken, date: selectedCorrectionDate,
+                inTime: byId('correction-in').value, outTime: byId('correction-out').value,
+                outDate: byId('correction-out-date').value, reason: byId('correction-reason').value
+            });
+            if (result?.ok !== true) {
+                byId('correction-error').textContent = result?.error || 'Could not submit. Please try again.';
+                return;
+            }
+            byId('correction-dialog').close();
+            await loadAttendanceMonth();
+        } finally {
+            submit.disabled = cancel.disabled = false;
         }
     }
 
