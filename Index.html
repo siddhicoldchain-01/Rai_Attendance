@@ -335,29 +335,55 @@
             byId('retryCamera').style.display = "flex";
             return;
         }
-        let photos = [];
+        if (btn.disabled) return;
+        const session = cameraSession;
         btn.disabled = true;
-        
-        for (let i = 1; i <= 3; i++) {
-            document.getElementById('ai-msg').innerText = `📸 Taking Photo ${i} of 3...`;
-            await new Promise(r => setTimeout(r, 1500));
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0);
-            photos.push(canvas.toDataURL('image/jpeg', 0.8));
-        }
-        
-        document.getElementById('ai-msg').innerText = "⏳ Saving profile securely...";
+        byId('retryCamera').disabled = true;
+        const msg = byId('ai-msg');
         try {
-            const result = await apiCall("registerFace", { photos: photos }, true);
-            if (!result || result.error || result.success === false || result.ok === false) {
-                throw new Error(result?.error || 'Registration was not saved. Please try again.');
+            const photos = [];
+            for (let i = 1; i <= 3; i++) {
+                msg.textContent = `📸 Taking Photo ${i} of 3...`;
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                if (session !== cameraSession || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+                    throw new Error('Camera stopped during capture. Tap Retry Camera and try again.');
+                }
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                photos.push(canvas.toDataURL('image/jpeg', 0.8));
             }
-            location.reload();
+            msg.textContent = 'Saving face registration… Please keep this page open.';
+            const result = await apiCall('registerFace', { photos }, true);
+            if (!result || result.error || result.success === false || result.ok === false) {
+                throw new Error(result?.error || result?.message || result?.status || 'Registration was not saved. Please try again.');
+            }
+            // Confirm persistence with the backend instead of reloading into registration again.
+            let saved;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                msg.textContent = 'Checking that your face registration was saved…';
+                saved = await apiCall('getAppData', {}, true);
+                if (saved?.authorized && saved.isRegistered === true) break;
+                if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (!saved?.authorized || saved.isRegistered !== true) {
+                const detail = typeof result === 'string' ? result
+                    : [result.message, result.status].filter(value => typeof value === 'string').join(' · ');
+                throw new Error('The server has not confirmed your face registration. Contact Aniket/HR to check the Apps Script registration and photo storage.' + (detail ? ' Server response: ' + detail.slice(0, 300) : ''));
+            }
+            config = saved;
+            byId('regBtn').style.display = 'none';
+            byId('face-title').textContent = 'Verifying…';
+            msg.style.color = '#059669';
+            msg.textContent = 'Face registration saved. Starting verification…';
+            await startCamera(true);
         } catch (err) {
-            byId('ai-msg').textContent = err.message || 'Registration failed. Please try again.';
+            msg.style.color = '#dc2626';
+            msg.textContent = err.message || 'Registration failed. Please try again.';
+        } finally {
             btn.disabled = false;
-        } 
+            byId('retryCamera').disabled = false;
+        }
     }
 
     function accessGranted() {
